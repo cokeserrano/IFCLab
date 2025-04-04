@@ -183,7 +183,7 @@ def modify_ifc():
                     logger.info(f"Valor del edificio modificado a: {ifc_building_value}")
             
             # Guardar el archivo modificado
-            ifcopenshell.write(modified_filepath, ifc_file)
+            ifc_file.write(modified_filepath, ifc_file)
             logger.info(f"Archivo modificado guardado en: {modified_filepath}")
             
             # Eliminar el archivo original temporal
