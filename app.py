@@ -18,8 +18,8 @@ CORS_ORIGIN = os.environ.get('CORS_ORIGIN', '*')
 CORS(app, resources={r"/*": {"origins": CORS_ORIGIN}})
 
 # Crear directorios temporales si no existen
-UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'ifc_uploads')
-MODIFY_FOLDER = os.path.join(tempfile.gettempdir(), 'modify_ifc')
+UPLOAD_FOLDER = "/mnt/disks/ifc_uploads"
+MODIFY_FOLDER = "/mnt/disks/modify_ifc"
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(MODIFY_FOLDER, exist_ok=True)
