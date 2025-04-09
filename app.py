@@ -1,208 +1,164 @@
+# Aumentar límites generales para el servidor Flask
+# Al inicio del archivo, después de las importaciones:
+
 import os
-import tempfile
-import ifcopenshell
 from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
 from werkzeug.utils import secure_filename
-import logging
+# ... resto de importaciones
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
+# Configuración del servidor para manejar archivos grandes y tiempos de ejecución prolongados
 app = Flask(__name__)
 
-# Configurar CORS para permitir peticiones desde el frontend
-CORS_ORIGIN = os.environ.get('CORS_ORIGIN', '*')
-CORS(app, resources={r"/*": {"origins": CORS_ORIGIN}})
+# Aumentar límite de tamaño de subida a 500MB
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
-# Crear directorios temporales si no existen
-UPLOAD_FOLDER = "/mnt/disks/ifc_uploads"
-MODIFY_FOLDER = "/mnt/disks/modify_ifc"
+# Si estás utilizando Gunicorn, añade en tu archivo de configuración o al iniciar Gunicorn:
+# gunicorn app:app --timeout 900 --workers 2 --threads 4 --worker-class gthread
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(MODIFY_FOLDER, exist_ok=True)
+# Si estás utilizando un servidor uvicorn o similar, configura un mayor tiempo de espera
+# uvicorn app:app --timeout-keep-alive 900
 
-logger.info(f"Directorios de almacenamiento: UPLOAD_FOLDER={UPLOAD_FOLDER}, MODIFY_FOLDER={MODIFY_FOLDER}")
-
-@app.route('/status', methods=['GET'])
-def status():
-    """Endpoint para verificar el estado del servidor"""
-    logger.info("Verificando estado del servidor")
-    return jsonify({"status": "online"}), 200
-
-@app.route('/get_ifc_values', methods=['POST'])
-def get_ifc_values():
-    """Endpoint para obtener los valores actuales del archivo IFC"""
-    try:
-        logger.info("Procesando solicitud para obtener valores IFC")
-        
-        # Verificar si hay un archivo en la solicitud
-        if 'file' not in request.files:
-            logger.error("No se encontró el archivo en la solicitud")
-            return jsonify({"error": "No se encontró el archivo"}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            logger.error("Nombre de archivo vacío")
-            return jsonify({"error": "Nombre de archivo vacío"}), 400
-        
-        # Guardar el archivo temporalmente
-        temp_filename = secure_filename(file.filename)
-        temp_filepath = os.path.join(UPLOAD_FOLDER, temp_filename)
-        file.save(temp_filepath)
-        logger.info(f"Archivo guardado temporalmente en {temp_filepath}")
-        
-        # Abrir el archivo IFC
-        try:
-            ifc_file = ifcopenshell.open(temp_filepath)
-            logger.info("Archivo IFC abierto correctamente")
-            
-            # Obtener los valores de proyecto, sitio y edificio
-            project_value = ""
-            site_value = ""
-            building_value = ""
-            
-            # Obtener el proyecto
-            projects = ifc_file.by_type("IfcProject")
-            if projects:
-                project = projects[0]
-                if project.Name:
-                    project_value = project.Name
-                elif project.LongName:
-                    project_value = project.LongName
-                logger.info(f"Valor del proyecto encontrado: {project_value}")
-            
-            # Obtener el sitio
-            sites = ifc_file.by_type("IfcSite")
-            if sites:
-                site = sites[0]
-                if site.Name:
-                    site_value = site.Name
-                elif site.LongName:
-                    site_value = site.LongName
-                logger.info(f"Valor del sitio encontrado: {site_value}")
-            
-            # Obtener el edificio
-            buildings = ifc_file.by_type("IfcBuilding")
-            if buildings:
-                building = buildings[0]
-                if building.Name:
-                    building_value = building.Name
-                elif building.LongName:
-                    building_value = building.LongName
-                logger.info(f"Valor del edificio encontrado: {building_value}")
-            
-            # Eliminar el archivo temporal
-            os.remove(temp_filepath)
-            logger.info(f"Archivo temporal eliminado: {temp_filepath}")
-            
-            return jsonify({
-                "project": project_value,
-                "site": site_value,
-                "building": building_value
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Error al abrir o procesar el archivo IFC: {str(e)}")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-            return jsonify({"error": f"Error al procesar el archivo IFC: {str(e)}"}), 500
-            
-    except Exception as e:
-        logger.error(f"Error general: {str(e)}")
-        return jsonify({"error": f"Error del servidor: {str(e)}"}), 500
+# Para la ruta del endpoint modify_ifc, asegúrate de aumentar los tiempos de espera y agregar manejo de archivos grandes:
 
 @app.route('/modify_ifc', methods=['POST'])
 def modify_ifc():
-    """Endpoint para modificar los valores de un archivo IFC"""
     try:
-        logger.info("Procesando solicitud para modificar archivo IFC")
+        # Obtener valores de los encabezados personalizados que enviamos desde el frontend
+        processing_timeout = int(request.headers.get('X-Processing-Timeout', 600000)) / 1000  # Convertir a segundos
+        file_size = int(request.headers.get('X-File-Size', 0))
+        processing_mode = request.headers.get('X-Processing-Mode', 'complete')
         
-        # Verificar si hay un archivo en la solicitud
-        if 'file' not in request.files:
-            logger.error("No se encontró el archivo en la solicitud")
-            return jsonify({"error": "No se encontró el archivo"}), 400
+        # Ajustar tiempo de operación basado en tamaño del archivo
+        operation_timeout = min(max(processing_timeout, 600), 1200)  # Entre 10 y 20 minutos
         
-        file = request.files['file']
-        if file.filename == '':
-            logger.error("Nombre de archivo vacío")
-            return jsonify({"error": "Nombre de archivo vacío"}), 400
+        print(f"Iniciando procesamiento de archivo IFC. Tamaño: {file_size/1024/1024:.2f} MB. Modo: {processing_mode}")
+        print(f"Timeout ajustado: {operation_timeout} segundos")
         
-        # Obtener los valores del formulario
+        # Establecer un timeout para esta operación específica
+        import signal
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError(f"La operación excedió el tiempo máximo permitido ({operation_timeout} segundos)")
+        
+        # Configurar timeout para esta operación
+        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(int(operation_timeout))
+        
+        # Código existente para procesar el archivo
+        file = request.files.get('file')
+        if not file:
+            return jsonify({"message": "No se proporcionó archivo"}), 400
+            
+        # Asegurarse de guardar el archivo en un directorio temporal con suficiente espacio
+        temp_dir = '/tmp/ifc_processing'  # Ajustar según tu entorno
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        filename = secure_filename(file.filename)
+        temp_filepath = os.path.join(temp_dir, filename)
+        
+        # Guardar archivo de manera eficiente
+        file.save(temp_filepath)
+        print(f"Archivo guardado en: {temp_filepath}")
+        
+        # Obtener los valores para modificar desde el formulario
         ifc_project_value = request.form.get('ifcProjectValue', '')
         ifc_site_value = request.form.get('ifcSiteValue', '')
         ifc_building_value = request.form.get('ifcBuildingValue', '')
-        save_to_folder = request.form.get('saveToFolder', 'modify_ifc')
         
-        logger.info(f"Valores a modificar: Proyecto={ifc_project_value}, Sitio={ifc_site_value}, Edificio={ifc_building_value}")
-        logger.info(f"Carpeta de destino: {save_to_folder}")
+        # Obtener valores actuales para procesamiento más eficiente
+        current_values = {}
         
-        # Guardar el archivo temporalmente
-        temp_filename = secure_filename(file.filename)
-        temp_filepath = os.path.join(UPLOAD_FOLDER, temp_filename)
-        file.save(temp_filepath)
-        logger.info(f"Archivo guardado temporalmente en {temp_filepath}")
+        # Si el archivo es grande, consideramos procesar por partes o con optimizaciones
+        if file_size > 100 * 1024 * 1024:  # Más de 100MB
+            print("Archivo grande detectado, aplicando optimizaciones de procesamiento")
+            # Aquí podrías implementar optimizaciones específicas para archivos grandes
+            # Por ejemplo, usar un subproceso con más memoria asignada
         
-        # Definir la ruta del archivo modificado
-        parts = os.path.splitext(temp_filename)
-        modified_filename = f"{parts[0]}_modified{parts[1]}"
-        modified_filepath = os.path.join(
-            MODIFY_FOLDER if save_to_folder == 'modify_ifc' else UPLOAD_FOLDER, 
-            modified_filename
-        )
+        # Procesar el archivo IFC (aquí va tu lógica actual)
+        # ...
+        # Tu código de procesamiento IFC aquí, que utiliza ifc_project_value, ifc_site_value, ifc_building_value
+        # ...
         
-        # Abrir y modificar el archivo IFC
-        try:
-            ifc_file = ifcopenshell.open(temp_filepath)
-            logger.info("Archivo IFC abierto correctamente")
-            
-            # Modificar el proyecto
-            if ifc_project_value:
-                projects = ifc_file.by_type("IfcProject")
-                if projects:
-                    project = projects[0]
-                    project.Name = ifc_project_value
-                    logger.info(f"Valor del proyecto modificado a: {ifc_project_value}")
-            
-            # Modificar el sitio
-            if ifc_site_value:
-                sites = ifc_file.by_type("IfcSite")
-                if sites:
-                    site = sites[0]
-                    site.Name = ifc_site_value
-                    logger.info(f"Valor del sitio modificado a: {ifc_site_value}")
-            
-            # Modificar el edificio
-            if ifc_building_value:
-                buildings = ifc_file.by_type("IfcBuilding")
-                if buildings:
-                    building = buildings[0]
-                    building.Name = ifc_building_value
-                    logger.info(f"Valor del edificio modificado a: {ifc_building_value}")
-            
-            # Guardar el archivo modificado
-            ifc_file.write(modified_filepath)
-            logger.info(f"Archivo modificado guardado en: {modified_filepath}")
-            
-            # Eliminar el archivo original temporal
-            os.remove(temp_filepath)
-            logger.info(f"Archivo temporal eliminado: {temp_filepath}")
-            
-            # Devolver el archivo modificado
-            return send_file(modified_filepath, as_attachment=True, download_name=modified_filename)
-            
-        except Exception as e:
-            logger.error(f"Error al modificar archivo IFC: {str(e)}")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-            return jsonify({"error": f"Error al modificar el archivo IFC: {str(e)}"}), 500
-            
+        # Eliminar el temporizador una vez que el procesamiento ha terminado
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        
+        # Después del procesamiento exitoso, enviar el archivo
+        # Asumiendo que el archivo procesado se guarda en output_filepath
+        return send_file(output_filepath, as_attachment=True)
+        
+    except TimeoutError as e:
+        print(f"Error de timeout: {str(e)}")
+        return jsonify({"message": f"El procesamiento ha excedido el tiempo máximo: {str(e)}"}), 504
     except Exception as e:
-        logger.error(f"Error general: {str(e)}")
-        return jsonify({"error": f"Error del servidor: {str(e)}"}), 500
+        print(f"Error en el procesamiento: {str(e)}")
+        return jsonify({"message": f"Error al procesar el archivo IFC: {str(e)}"}), 500
+    finally:
+        # Limpiar recursos, archivos temporales, etc.
+        try:
+            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            if 'output_filepath' in locals() and os.path.exists(output_filepath) and output_filepath != temp_filepath:
+                # Solo eliminar si es diferente al archivo temporal original
+                pass  # Decidir si eliminar o no
+        except Exception as e:
+            print(f"Error al limpiar recursos: {str(e)}")
 
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+# Endpoint para get_ifc_values similar, con ajustes de timeout
+@app.route('/get_ifc_values', methods=['POST'])
+def get_ifc_values():
+    try:
+        # Obtener timeout de los encabezados
+        processing_timeout = int(request.headers.get('X-Processing-Timeout', 120000)) / 1000  # Convertir a segundos
+        analysis_mode = request.headers.get('X-Analysis-Mode', 'fast')
+        
+        # Limitar el timeout a un valor razonable
+        operation_timeout = min(max(processing_timeout, 60), 180)  # Entre 1 y 3 minutos
+        
+        print(f"Iniciando análisis de valores IFC. Modo: {analysis_mode}")
+        print(f"Timeout ajustado: {operation_timeout} segundos")
+        
+        # Configurar timeout para esta operación
+        import signal
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError(f"El análisis excedió el tiempo máximo permitido ({operation_timeout} segundos)")
+        
+        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(int(operation_timeout))
+        
+        # Resto del código existente para obtener valores
+        # ...
+        
+        # Desactivar el temporizador
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        
+        # Devolver valores
+        return jsonify({
+            'project': project_value,
+            'site': site_value,
+            'building': building_value
+        })
+        
+    except TimeoutError as e:
+        print(f"Error de timeout: {str(e)}")
+        return jsonify({"message": f"El análisis ha excedido el tiempo máximo: {str(e)}"}), 504
+    except Exception as e:
+        print(f"Error en el análisis: {str(e)}")
+        return jsonify({"message": f"Error al analizar el archivo IFC: {str(e)}"}), 500
+    finally:
+        # Limpiar recursos
+        pass
+
+# Añadir un endpoint de estado para verificaciones de salud
+@app.route('/status', methods=['GET'])
+def status():
+    return jsonify({"status": "online"})
+
+
+# Si usas script principal
+if __name__ == '__main__':
+    # Aumentar timeout del servidor de desarrollo
+    # Nota: Esto solo afecta al servidor de desarrollo de Flask
+    app.run(debug=True, threaded=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
